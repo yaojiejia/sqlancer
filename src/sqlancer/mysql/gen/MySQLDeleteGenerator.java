@@ -77,6 +77,7 @@ public class MySQLDeleteGenerator {
                 }
             }
         }
+        
         return new SQLQueryAdapter(sb.toString(), errors);
     }
 
