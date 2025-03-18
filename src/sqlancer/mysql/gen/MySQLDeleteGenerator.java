@@ -2,17 +2,16 @@ package sqlancer.mysql.gen;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import sqlancer.Randomly;
 import sqlancer.common.query.ExpectedErrors;
 import sqlancer.common.query.SQLQueryAdapter;
 import sqlancer.mysql.MySQLErrors;
 import sqlancer.mysql.MySQLGlobalState;
+import sqlancer.mysql.MySQLSchema.MySQLColumn;
 import sqlancer.mysql.MySQLSchema.MySQLTable;
 import sqlancer.mysql.MySQLVisitor;
-import sqlancer.mysql.ast.MySQLExpression;
-import sqlancer.mysql.MySQLSchema.MySQLColumn;
+
 public class MySQLDeleteGenerator {
 
     private final StringBuilder sb = new StringBuilder();
@@ -54,12 +53,30 @@ public class MySQLDeleteGenerator {
                                                     */, "Truncated incorrect INTEGER value",
                 "Truncated incorrect DECIMAL value", "Data truncated for functional index"));
         // TODO: support ORDER BY
-       List<MySQLColumn> columns = randomTable.getColumns();
-       List<MySQLExpression> orderBy = new MySQLExpressionGenerator(globalState).setColumns(columns)
-               .generateOrderBys();
-       sb.append(" ORDER BY ");
-       sb.append(orderBy.stream().map(o -> MySQLVisitor.asString(o)).collect(Collectors.joining(", ")));
+        if (Randomly.getBoolean() && !randomTable.getColumns().isEmpty()) {
+            sb.append(" ORDER BY ");
 
+            List<MySQLColumn> columns = randomTable.getColumns();
+            List<MySQLColumn> selectedColumns = Randomly.nonEmptySubset(columns);
+
+            boolean firstColumn = true;
+            for (MySQLColumn column : selectedColumns) {
+                if (!firstColumn) {
+                    sb.append(", ");
+                }
+                firstColumn = false;
+
+                sb.append(column.getName());
+
+                if (Randomly.getBoolean()) {
+                    if (Randomly.getBoolean()) {
+                        sb.append(" ASC");
+                    } else {
+                        sb.append(" DESC");
+                    }
+                }
+            }
+        }
         return new SQLQueryAdapter(sb.toString(), errors);
     }
 
