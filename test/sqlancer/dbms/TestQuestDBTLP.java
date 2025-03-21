@@ -12,7 +12,7 @@ public class TestQuestDBTLP {
         assertEquals(0,Main.executeMain(new String[] {
             "--random-seed", "0",
             "--timeout-seconds", TestConfig.SECONDS,
-            "--num-queries", "0",
+            "--num-queries", TestConfig.NUM_QUERIES,
             "--num-threads", "1",     
             "questdb"
         }));
