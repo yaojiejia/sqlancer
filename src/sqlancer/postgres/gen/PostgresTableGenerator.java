@@ -249,7 +249,6 @@ public class PostgresTableGenerator {
             constraintSubset.remove(ColumnConstraint.GENERATED);
             constraintSubset.remove(ColumnConstraint.DEFAULT);
             constraintSubset.remove(ColumnConstraint.NULL_OR_NOT_NULL);
-
         }
         for (ColumnConstraint c : constraintSubset) {
             sb.append(" ");
@@ -270,7 +269,6 @@ public class PostgresTableGenerator {
                 sb.append(" (");
                 sb.append(PostgresVisitor.asString(PostgresExpressionGenerator.generateExpression(globalState, type)));
                 sb.append(")");
-                // CREATE TEMPORARY TABLE t1(c0 smallint DEFAULT ('566963878'));
                 errors.add("out of range");
                 errors.add("is a generated column");
                 break;
@@ -296,14 +294,42 @@ public class PostgresTableGenerator {
                     errors.add("generation expression is not immutable");
                     errors.add("cannot use column reference in DEFAULT expression");
                 } else {
+                    // IDENTITY generation
                     sb.append(Randomly.fromOptions("ALWAYS", "BY DEFAULT"));
                     sb.append(" AS IDENTITY");
+                    if (Randomly.getBoolean()) {
+                        // Optionally add sequence options
+                        sb.append(" (");
+                        List<String> options = new ArrayList<>();
+                        if (Randomly.getBoolean()) {
+                            options.add("START WITH " + globalState.getRandomly().getPositiveInteger());
+                        }
+                        if (Randomly.getBoolean()) {
+                            options.add("INCREMENT BY " + globalState.getRandomly().getPositiveInteger());
+                        }
+                        if (Randomly.getBoolean()) {
+                            options.add("MINVALUE " + globalState.getRandomly().getPositiveInteger());
+                        }
+                        if (Randomly.getBoolean()) {
+                            options.add("MAXVALUE " + globalState.getRandomly().getPositiveInteger());
+                        }
+                        if (Randomly.getBoolean()) {
+                            options.add("CACHE " + globalState.getRandomly().getPositiveInteger());
+                        }
+                        if (Randomly.getBoolean()) {
+                            options.add(Randomly.fromOptions("CYCLE", "NO CYCLE"));
+                        }
+                        sb.append(String.join(" ", options));
+                        sb.append(")");
+                    }
+                    errors.add("cannot have identity column constraint and identity specification");
+                    errors.add("cannot have serial column constraint and identity specification");
                 }
                 break;
             default:
                 throw new AssertionError(sb);
             }
         }
-    }
+}
 
 }

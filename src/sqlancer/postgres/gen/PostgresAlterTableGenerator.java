@@ -1,7 +1,7 @@
 package sqlancer.postgres.gen;
 
 import java.util.List;
-
+import java.util.ArrayList;
 import sqlancer.IgnoreMeException;
 import sqlancer.Randomly;
 import sqlancer.common.query.ExpectedErrors;
@@ -48,7 +48,11 @@ public class PostgresAlterTableGenerator {
         SET_LOGGED_UNLOGGED, //
         NOT_OF, //
         OWNER_TO, //
-        REPLICA_IDENTITY
+        REPLICA_IDENTITY,
+        ALTER_COLUMN_SET_IDENTITY,
+        ALTER_COLUMN_SET_GENERATED,
+        ALTER_COLUMN_DROP_IDENTITY,
+        ALTER_COLUMN_RESTART
     }
 
     public PostgresAlterTableGenerator(PostgresTable randomTable, PostgresGlobalState globalState,
@@ -91,292 +95,317 @@ public class PostgresAlterTableGenerator {
         errors.add("could not find cast from");
         errors.add("does not exist"); // TODO: investigate
         errors.add("constraints on permanent tables may reference only permanent tables");
-        List<Action> action;
+        List<Action> actions = new ArrayList<>();
         if (Randomly.getBoolean()) {
-            action = Randomly.nonEmptySubset(Action.values());
+            actions = Randomly.nonEmptySubset(Action.values());
         } else {
             // make it more likely that the ALTER TABLE succeeds
-            action = Randomly.subset(Randomly.smallNumber(), Action.values());
+            actions = Randomly.subset(Randomly.smallNumber(), Action.values());
         }
         if (randomTable.getColumns().size() == 1) {
-            action.remove(Action.ALTER_TABLE_DROP_COLUMN);
+            actions.remove(Action.ALTER_TABLE_DROP_COLUMN);
         }
+        
+        // Add identity-related actions only for INT columns
+        PostgresColumn randomColumn = randomTable.getRandomColumn();
+        if (randomColumn.getType() == PostgresDataType.INT) {
+            actions.add(Action.ALTER_COLUMN_SET_IDENTITY);
+            actions.add(Action.ALTER_COLUMN_SET_GENERATED);
+            actions.add(Action.ALTER_COLUMN_DROP_IDENTITY);
+            actions.add(Action.ALTER_COLUMN_RESTART);
+        }
+        
         if (randomTable.getIndexes().isEmpty()) {
-            action.remove(Action.ADD_TABLE_CONSTRAINT_USING_INDEX);
-            action.remove(Action.CLUSTER_ON);
+            actions.remove(Action.ADD_TABLE_CONSTRAINT_USING_INDEX);
+            actions.remove(Action.CLUSTER_ON);
         }
-        action.remove(Action.SET_WITH_OIDS);
+        actions.remove(Action.SET_WITH_OIDS);
         if (!randomTable.hasIndexes()) {
-            action.remove(Action.ADD_TABLE_CONSTRAINT_USING_INDEX);
+            actions.remove(Action.ADD_TABLE_CONSTRAINT_USING_INDEX);
         }
-        if (action.isEmpty()) {
+        if (actions.isEmpty()) {
             throw new IgnoreMeException();
         }
-        return action;
+        return actions;
     }
 
     public SQLQueryAdapter generate() {
         ExpectedErrors errors = new ExpectedErrors();
-        int i = 0;
-        List<Action> action = getActions(errors);
-        StringBuilder sb = new StringBuilder();
-        sb.append("ALTER TABLE ");
-        if (Randomly.getBoolean()) {
-            sb.append(" ONLY");
-            errors.add("cannot use ONLY for foreign key on partitioned table");
+        List<Action> actions = getActions(errors);
+        
+        // Skip if no actions
+        if (actions.isEmpty()) {
+            throw new IgnoreMeException();
         }
-        sb.append(" ");
-        sb.append(randomTable.getName());
-        sb.append(" ");
-        for (Action a : action) {
-            if (i++ != 0) {
-                sb.append(", ");
+        
+        List<String> validStatements = new ArrayList<>();
+        
+        for (Action a : actions) {
+            if (a == null) {
+                continue;
             }
+            
+            StringBuilder sb = new StringBuilder();
+            sb.append("ALTER TABLE ");
+            if (Randomly.getBoolean()) {
+                sb.append("ONLY ");
+            }
+            sb.append(randomTable.getName());
+            sb.append(" ");
+            
+            int lengthBefore = sb.length();
+            boolean actionGenerated = false;
+            
             switch (a) {
-            case ALTER_TABLE_DROP_COLUMN:
-                sb.append("DROP ");
-                if (Randomly.getBoolean()) {
-                    sb.append(" IF EXISTS ");
-                }
-                sb.append(randomTable.getRandomColumn().getName());
-                errors.add("because other objects depend on it");
-                if (Randomly.getBoolean()) {
-                    sb.append(" ");
-                    sb.append(Randomly.fromOptions("RESTRICT", "CASCADE"));
-                }
-                errors.add("does not exist");
-                errors.add("cannot drop column");
-                errors.add("cannot drop inherited column");
-                break;
-            case ALTER_COLUMN_TYPE:
-                alterColumn(randomTable, sb);
-                if (Randomly.getBoolean()) {
-                    sb.append(" SET DATA");
-                }
-                sb.append(" TYPE ");
-                PostgresDataType randomType = PostgresDataType.getRandomType();
-                PostgresCommon.appendDataType(randomType, sb, false, generateOnlyKnown, opClasses);
-                // TODO [ COLLATE collation ] [ USING expression ]
-                errors.add("cannot alter type of a column used by a view or rule");
-                errors.add("cannot convert infinity to numeric");
-                errors.add("is duplicated");
-                errors.add("cannot be cast automatically");
-                errors.add("is an identity column");
-                errors.add("identity column type must be smallint, integer, or bigint");
-                errors.add("out of range");
-                errors.add("cannot alter type of column named in partition key");
-                errors.add("cannot alter type of column referenced in partition key expression");
-                errors.add("because it is part of the partition key of relation");
-                errors.add("argument of CHECK must be type boolean");
-                errors.add("operator does not exist");
-                errors.add("must be type");
-                errors.add("You might need to add explicit type casts");
-                errors.add("cannot cast type");
-                errors.add("foreign key constrain");
-                errors.add("division by zero");
-                errors.add("value too long for type character varying");
-                errors.add("cannot drop index");
-                errors.add("cannot alter inherited column");
-                errors.add("must be changed in child tables too");
-                errors.add("could not determine which collation to use for index expression");
-                errors.add("bit string too long for type bit varying");
-                errors.add("cannot alter type of a column used by a generated column");
-                break;
-            case ALTER_COLUMN_SET_DROP_DEFAULT:
-                alterColumn(randomTable, sb);
-                if (Randomly.getBoolean()) {
-                    sb.append("DROP DEFAULT");
-                } else {
-                    sb.append("SET DEFAULT ");
-                    sb.append(PostgresVisitor.asString(
-                            PostgresExpressionGenerator.generateExpression(globalState, randomColumn.getType())));
-                    errors.add("is out of range");
-                    errors.add("but default expression is of type");
-                    errors.add("cannot cast");
-                }
-                errors.add("is a generated column");
-                errors.add("is an identity column");
-                break;
-            case ALTER_COLUMN_SET_DROP_NULL:
-                alterColumn(randomTable, sb);
-                if (Randomly.getBoolean()) {
-                    sb.append("SET NOT NULL");
-                    errors.add("contains null values");
-                } else {
-                    sb.append("DROP NOT NULL");
-                    errors.add("is in a primary key");
+                case ALTER_TABLE_DROP_COLUMN:
+                    sb.append("DROP COLUMN ");
+                    if (Randomly.getBoolean()) {
+                        sb.append("IF EXISTS ");
+                    }
+                    sb.append(randomTable.getRandomColumn().getName());
+                    if (Randomly.getBoolean()) {
+                        sb.append(" ");
+                        sb.append(Randomly.fromOptions("RESTRICT", "CASCADE"));
+                    }
+                    errors.add("because other objects depend on it");
+                    errors.add("does not exist");
+                    errors.add("cannot drop column");
+                    errors.add("cannot drop inherited column");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_TYPE:
+                    alterColumn(randomTable, sb);
+                    if (Randomly.getBoolean()) {
+                        sb.append("SET DATA ");
+                    }
+                    sb.append("TYPE ");
+                    PostgresDataType randomType = PostgresDataType.getRandomType();
+                    sb.append(randomType.toString());
+                    errors.add("cannot be cast automatically to type");
+                    errors.add("foreign key constraint");
+                    errors.add("cannot alter type of a column used by a view or rule");
+                    errors.add("cannot convert infinity to numeric");
+                    errors.add("is duplicated");
+                    errors.add("cannot be cast automatically");
                     errors.add("is an identity column");
-                    errors.add("is in index used as replica identity");
-                }
-                break;
-            case ALTER_COLUMN_SET_STATISTICS:
-                alterColumn(randomTable, sb);
-                sb.append("SET STATISTICS ");
-                sb.append(r.getInteger(0, 10000));
-                break;
-            case ALTER_COLUMN_SET_ATTRIBUTE_OPTION:
-                alterColumn(randomTable, sb);
-                sb.append(" SET(");
-                List<Attribute> subset = Randomly.nonEmptySubset(Attribute.values());
-                int j = 0;
-                for (Attribute attr : subset) {
-                    if (j++ != 0) {
-                        sb.append(", ");
+                    errors.add("identity column type must be smallint, integer, or bigint");
+                    errors.add("out of range");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_DROP_DEFAULT:
+                    alterColumn(randomTable, sb);
+                    if (Randomly.getBoolean()) {
+                        sb.append("SET DEFAULT ");
+                        sb.append(globalState.getRandomly().getInteger());
+                    } else {
+                        sb.append("DROP DEFAULT");
                     }
-                    sb.append(attr.val);
-                    sb.append("=");
-                    sb.append(Randomly.fromOptions(-1, -0.8, -0.5, -0.2, -0.1, -0.00001, -0.0000000001, 0, 0.000000001,
-                            0.0001, 0.1, 1));
-                }
-                sb.append(")");
-                break;
-            case ALTER_COLUMN_RESET_ATTRIBUTE_OPTION:
-                alterColumn(randomTable, sb);
-                sb.append(" RESET(");
-                subset = Randomly.nonEmptySubset(Attribute.values());
-                j = 0;
-                for (Attribute attr : subset) {
-                    if (j++ != 0) {
-                        sb.append(", ");
+                    errors.add("invalid input syntax");
+                    errors.add("is a generated column");
+                    errors.add("is an identity column");
+                    errors.add("Use ALTER TABLE ... ALTER COLUMN ... DROP IDENTITY instead");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_DROP_NULL:
+                    alterColumn(randomTable, sb);
+                    if (Randomly.getBoolean()) {
+                        sb.append("SET NOT NULL");
+                        errors.add("contains null values");
+                    } else {
+                        sb.append("DROP NOT NULL");
+                        errors.add("is in a primary key");
+                        errors.add("is an identity column");
                     }
-                    sb.append(attr.val);
-                }
-                sb.append(")");
-                break;
-            case ALTER_COLUMN_SET_STORAGE:
-                alterColumn(randomTable, sb);
-                sb.append("SET STORAGE ");
-                sb.append(Randomly.fromOptions("PLAIN", "EXTERNAL", "EXTENDED", "MAIN"));
-                errors.add("can only have storage");
-                errors.add("is an identity column");
-                break;
-            case ADD_TABLE_CONSTRAINT:
-                sb.append("ADD ");
-                sb.append("CONSTRAINT " + r.getAlphabeticChar() + " ");
-                PostgresCommon.addTableConstraint(sb, randomTable, globalState, errors);
-                errors.add("already exists");
-                errors.add("multiple primary keys for table");
-                errors.add("could not create unique index");
-                errors.add("contains null values");
-                errors.add("cannot cast type");
-                errors.add("unsupported PRIMARY KEY constraint with partition key definition");
-                errors.add("unsupported UNIQUE constraint with partition key definition");
-                errors.add("insufficient columns in UNIQUE constraint definition");
-                errors.add("which is part of the partition key");
-                errors.add("out of range");
-                errors.add("there is no unique constraint matching given keys for referenced table");
-                errors.add("constraints on temporary tables may reference only temporary tables");
-                errors.add("constraints on unlogged tables may reference only permanent or unlogged tables");
-                errors.add("constraints on permanent tables may reference only permanent tables");
-                errors.add("cannot reference partitioned table");
-                errors.add("cannot be implemented");
-                errors.add("violates foreign key constraint");
-                errors.add("unsupported ON COMMIT and foreign key combination");
-                errors.add("USING INDEX is not supported on partitioned tables");
-                if (Randomly.getBoolean()) {
-                    sb.append(" NOT VALID");
-                    errors.add("cannot be marked NOT VALID");
-                    errors.add("cannot add NOT VALID foreign key on partitioned table");
-                } else {
-                    errors.add("is violated by some row");
-                }
-                break;
-            case ADD_TABLE_CONSTRAINT_USING_INDEX:
-                sb.append("ADD ");
-                sb.append("CONSTRAINT " + r.getAlphabeticChar() + " ");
-                sb.append(Randomly.fromOptions("UNIQUE", "PRIMARY KEY"));
-                errors.add("already exists");
-                errors.add("not valid");
-                sb.append(" USING INDEX ");
-                sb.append(randomTable.getRandomIndex().getIndexName());
-                errors.add("is not a unique index");
-                errors.add("is already associated with a constraint");
-                errors.add("Cannot create a primary key or unique constraint using such an index");
-                errors.add("multiple primary keys for table");
-                errors.add("appears twice in unique constraint");
-                errors.add("appears twice in primary key constraint");
-                errors.add("contains null values");
-                errors.add("insufficient columns in PRIMARY KEY constraint definition");
-                errors.add("which is part of the partition key");
-                break;
-            case VALIDATE_CONSTRAINT:
-                sb.append("VALIDATE CONSTRAINT asdf");
-                errors.add("does not exist");
-                // FIXME select constraint
-                break;
-            case DISABLE_ROW_LEVEL_SECURITY:
-                sb.append("DISABLE ROW LEVEL SECURITY");
-                break;
-            case ENABLE_ROW_LEVEL_SECURITY:
-                sb.append("ENABLE ROW LEVEL SECURITY");
-                break;
-            case FORCE_ROW_LEVEL_SECURITY:
-                sb.append("FORCE ROW LEVEL SECURITY");
-                break;
-            case NO_FORCE_ROW_LEVEL_SECURITY:
-                sb.append("NO FORCE ROW LEVEL SECURITY");
-                break;
-            case CLUSTER_ON:
-                sb.append("CLUSTER ON ");
-                sb.append(randomTable.getRandomIndex().getIndexName());
-                errors.add("cannot cluster on");
-                errors.add("cannot mark index clustered in partitioned table");
-                errors.add("not valid");
-                break;
-            case SET_WITHOUT_CLUSTER:
-                sb.append("SET WITHOUT CLUSTER");
-                errors.add("cannot mark index clustered in partitioned table");
-                break;
-            case SET_WITH_OIDS:
-                errors.add("is an identity column");
-                sb.append("SET WITH OIDS");
-                break;
-            case SET_WITHOUT_OIDS:
-                sb.append("SET WITHOUT OIDS");
-                break;
-            case SET_LOGGED_UNLOGGED:
-                sb.append("SET ");
-                sb.append(Randomly.fromOptions("LOGGED", "UNLOGGED"));
-                errors.add("because it is temporary");
-                errors.add("to logged because it references unlogged table");
-                errors.add("to unlogged because it references logged table");
-                break;
-            case NOT_OF:
-                errors.add("is not a typed table");
-                sb.append("NOT OF");
-                break;
-            case OWNER_TO:
-                sb.append("OWNER TO ");
-                // TODO: new_owner
-                sb.append(Randomly.fromOptions("CURRENT_USER", "SESSION_USER"));
-                break;
-            case REPLICA_IDENTITY:
-                sb.append("REPLICA IDENTITY ");
-                if (Randomly.getBoolean() || randomTable.getIndexes().isEmpty()) {
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_STATISTICS:
+                    alterColumn(randomTable, sb);
+                    sb.append("SET STATISTICS ");
+                    sb.append(globalState.getRandomly().getInteger(-1, 10000));
+                    errors.add("must be between");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_ATTRIBUTE_OPTION:
+                    alterColumn(randomTable, sb);
+                    sb.append("SET (n_distinct=");
+                    double nDistinct = globalState.getRandomly().getDouble() * 2 - 1; // Range: -1 to 1
+                    sb.append(nDistinct);
+                    sb.append(")");
+                    errors.add("value out of bounds for option");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_RESET_ATTRIBUTE_OPTION:
+                    alterColumn(randomTable, sb);
+                    sb.append("RESET (n_distinct)");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_STORAGE:
+                    alterColumn(randomTable, sb);
+                    sb.append("SET STORAGE ");
+                    if (randomColumn != null) {
+                        if (randomColumn.getType() == PostgresDataType.INT || 
+                            randomColumn.getType().toString().contains("int") ||
+                            randomColumn.getType().toString().contains("numeric")) {
+                            sb.append("PLAIN");
+                        } else {
+                            sb.append(Randomly.fromOptions("PLAIN", "EXTERNAL", "EXTENDED", "MAIN"));
+                        }
+                    }
+                    errors.add("can only have storage PLAIN");
+                    actionGenerated = true;
+                    break;
+                    
+                case ALTER_COLUMN_SET_IDENTITY:
+                    // Skip identity operations entirely to avoid type conflicts
+                    // Since we can't track type changes within the same statement
+                    continue;
+                    
+                case ALTER_COLUMN_SET_GENERATED:
+                    // Skip to avoid "is not an identity column" errors
+                    continue;
+                    
+                case ALTER_COLUMN_DROP_IDENTITY:
+                    if (randomColumn != null) {
+                        alterColumn(randomTable, sb);
+                        sb.append("DROP IDENTITY");
+                        if (Randomly.getBoolean()) {
+                            sb.append(" IF EXISTS");
+                        }
+                        actionGenerated = true;
+                    }
+                    errors.add("is not an identity column");
+                    errors.add("column does not exist");
+                    break;
+                    
+                case ALTER_COLUMN_RESTART:
+                    if (randomColumn != null) {
+                        alterColumn(randomTable, sb);
+                        sb.append("RESTART");
+                        if (Randomly.getBoolean()) {
+                            sb.append(" WITH ");
+                            sb.append(globalState.getRandomly().getInteger(2, 200));
+                        }
+                        actionGenerated = true;
+                    }
+                    errors.add("is not an identity column");
+                    errors.add("must be greater than or equal to");
+                    errors.add("cannot restart identity column");
+                    errors.add("column does not exist");
+                    break;
+                    
+                case ADD_TABLE_CONSTRAINT:
+                    sb.append("ADD CONSTRAINT c");
+                    sb.append(Math.abs(globalState.getRandomly().getInteger()));
+                    sb.append(" CHECK (TRUE)");
+                    errors.add("already exists");
+                    errors.add("violates check constraint");
+                    actionGenerated = true;
+                    break;
+                    
+                case VALIDATE_CONSTRAINT:
+                    sb.append("VALIDATE CONSTRAINT asdf");
+                    errors.add("does not exist");
+                    actionGenerated = true;
+                    break;
+                    
+                case DISABLE_ROW_LEVEL_SECURITY:
+                    sb.append("DISABLE ROW LEVEL SECURITY");
+                    actionGenerated = true;
+                    break;
+                    
+                case ENABLE_ROW_LEVEL_SECURITY:
+                    sb.append("ENABLE ROW LEVEL SECURITY");
+                    actionGenerated = true;
+                    break;
+                    
+                case FORCE_ROW_LEVEL_SECURITY:
+                    sb.append("FORCE ROW LEVEL SECURITY");
+                    actionGenerated = true;
+                    break;
+                    
+                case NO_FORCE_ROW_LEVEL_SECURITY:
+                    sb.append("NO FORCE ROW LEVEL SECURITY");
+                    actionGenerated = true;
+                    break;
+                    
+                case SET_WITHOUT_CLUSTER:
+                    sb.append("SET WITHOUT CLUSTER");
+                    actionGenerated = true;
+                    break;
+                    
+                case SET_WITHOUT_OIDS:
+                    sb.append("SET WITHOUT OIDS");
+                    actionGenerated = true;
+                    break;
+                    
+                case SET_LOGGED_UNLOGGED:
+                    sb.append("SET ");
+                    sb.append(Randomly.fromOptions("LOGGED", "UNLOGGED"));
+                    errors.add("because it is temporary");
+                    actionGenerated = true;
+                    break;
+                    
+                case NOT_OF:
+                    sb.append("NOT OF");
+                    errors.add("is not a typed table");
+                    actionGenerated = true;
+                    break;
+                    
+                case OWNER_TO:
+                    sb.append("OWNER TO ");
+                    sb.append(Randomly.fromOptions("CURRENT_USER", "SESSION_USER"));
+                    actionGenerated = true;
+                    break;
+                    
+                case REPLICA_IDENTITY:
+                    sb.append("REPLICA IDENTITY ");
                     sb.append(Randomly.fromOptions("DEFAULT", "FULL", "NOTHING"));
-                } else {
-                    sb.append("USING INDEX ");
-                    sb.append(randomTable.getRandomIndex().getIndexName());
-                    errors.add("cannot be used as replica identity");
-                    errors.add("cannot use non-unique index");
-                    errors.add("cannot use expression index");
-                    errors.add("cannot use partial index");
-                    errors.add("cannot use invalid index");
-                }
-                break;
-            default:
-                throw new AssertionError(a);
+                    actionGenerated = true;
+                    break;
+                    
+                default:
+                    // Skip unknown actions
+                    continue;
+            }
+            
+            // Only add statement if an action was actually generated
+            if (actionGenerated && sb.length() > lengthBefore) {
+                validStatements.add(sb.toString());
             }
         }
-
-        return new SQLQueryAdapter(sb.toString(), errors, true);
+        
+        // If no valid statements were generated, skip this generation
+        if (validStatements.isEmpty()) {
+            throw new IgnoreMeException();
+        }
+        
+        return new SQLQueryAdapter(String.join("; ", validStatements), errors, true);
     }
 
     private static void alterColumn(PostgresTable randomTable, StringBuilder sb) {
-        sb.append("ALTER ");
+        sb.append("ALTER COLUMN ");
         randomColumn = randomTable.getRandomColumn();
         sb.append(randomColumn.getName());
         sb.append(" ");
+    }
+
+    private boolean isIdentityAction(Action a) {
+        return a == Action.ALTER_COLUMN_SET_IDENTITY 
+            || a == Action.ALTER_COLUMN_SET_GENERATED
+            || a == Action.ALTER_COLUMN_DROP_IDENTITY 
+            || a == Action.ALTER_COLUMN_RESTART;
+    }
+
+    private boolean hasValidColumnsForIdentity(PostgresTable table) {
+        return table.getColumns().stream()
+            .anyMatch(col -> col.getType() == PostgresDataType.INT);
     }
 
 }

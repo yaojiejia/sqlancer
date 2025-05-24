@@ -49,15 +49,24 @@ public class PostgresSchema extends AbstractSchema<PostgresGlobalState, Postgres
     }
 
     public static class PostgresColumn extends AbstractTableColumn<PostgresTable, PostgresDataType> {
+        private final boolean isIdentity;
+
+        public PostgresColumn(String name, PostgresDataType columnType, boolean isIdentity) {
+            super(name, null, columnType);
+            this.isIdentity = isIdentity;
+        }
 
         public PostgresColumn(String name, PostgresDataType columnType) {
-            super(name, null, columnType);
+            this(name, columnType, false);
         }
 
         public static PostgresColumn createDummy(String name) {
             return new PostgresColumn(name, PostgresDataType.INT);
         }
 
+        public boolean isIdentity() {
+            return isIdentity;
+        }
     }
 
     public static class PostgresTables extends AbstractTables<PostgresTable, PostgresColumn> {
@@ -297,13 +306,14 @@ public class PostgresSchema extends AbstractSchema<PostgresGlobalState, Postgres
     protected static List<PostgresColumn> getTableColumns(SQLConnection con, String tableName) throws SQLException {
         List<PostgresColumn> columns = new ArrayList<>();
         try (Statement s = con.createStatement()) {
-            try (ResultSet rs = s
-                    .executeQuery("select column_name, data_type from INFORMATION_SCHEMA.COLUMNS where table_name = '"
-                            + tableName + "' ORDER BY column_name")) {
+            try (ResultSet rs = s.executeQuery(
+                    "SELECT column_name, data_type, is_identity FROM INFORMATION_SCHEMA.COLUMNS WHERE table_name = '"
+                    + tableName + "' ORDER BY column_name")) {
                 while (rs.next()) {
                     String columnName = rs.getString("column_name");
                     String dataType = rs.getString("data_type");
-                    PostgresColumn c = new PostgresColumn(columnName, getColumnType(dataType));
+                    boolean isIdentity = "YES".equals(rs.getString("is_identity"));
+                    PostgresColumn c = new PostgresColumn(columnName, getColumnType(dataType), isIdentity);
                     columns.add(c);
                 }
             }
