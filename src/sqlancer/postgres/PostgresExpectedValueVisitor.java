@@ -24,6 +24,8 @@ import sqlancer.postgres.ast.PostgresSelect.PostgresSubquery;
 import sqlancer.postgres.ast.PostgresSimilarTo;
 import sqlancer.postgres.ast.PostgresTableReference;
 import sqlancer.postgres.ast.PostgresWindowFunction;
+import sqlancer.postgres.ast.PostgresCTE;
+import sqlancer.postgres.ast.PostgresWithClause;
 
 public final class PostgresExpectedValueVisitor implements PostgresVisitor {
 
@@ -193,6 +195,19 @@ public final class PostgresExpectedValueVisitor implements PostgresVisitor {
         print(op);
         visit(op.getLeft());
         visit(op.getRight());
+    }
+
+    @Override
+    public void visit(PostgresCTE cte) {
+        print(cte);
+        visit(cte.getQuery());
+    }
+
+    @Override
+    public void visit(PostgresWithClause withClause) {
+        for (PostgresCTE cte : withClause.getCteList()) {
+            visit(cte);
+        }
     }
 
 }

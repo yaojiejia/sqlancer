@@ -24,6 +24,9 @@ public class PostgresSelect extends SelectBase<PostgresExpression>
     private ForClause forClause;
     private List<PostgresExpression> windowFunctions = new ArrayList<>();
     private final Map<String, WindowDefinition> windowDefinitions = new HashMap<>();
+    private PostgresWithClause withClause;
+    private PostgresSelect unionClause;
+    private UnionType unionType;
 
     public enum ForClause {
         UPDATE("UPDATE"), NO_KEY_UPDATE("NO KEY UPDATE"), SHARE("SHARE"), KEY_SHARE("KEY SHARE");
@@ -65,6 +68,14 @@ public class PostgresSelect extends SelectBase<PostgresExpression>
 
         public WindowFrame getFrame() {
             return frame;
+        }
+    }
+
+    public enum UnionType {
+        UNION, UNION_ALL, INTERSECT, EXCEPT;
+
+        public static UnionType getRandom() {
+            return Randomly.fromOptions(values());
         }
     }
 
@@ -160,6 +171,9 @@ public class PostgresSelect extends SelectBase<PostgresExpression>
     }
 
     public void setSelectOption(SelectType fromOptions) {
+        if (fromOptions == SelectType.DISTINCT && forClause != null) {
+            throw new IllegalArgumentException("FOR UPDATE is not allowed with DISTINCT clause");
+        }
         this.selectOption = fromOptions;
     }
 
@@ -184,6 +198,12 @@ public class PostgresSelect extends SelectBase<PostgresExpression>
     }
 
     public void setForClause(ForClause forClause) {
+        if (selectOption == SelectType.DISTINCT && forClause != null) {
+            throw new IllegalArgumentException("FOR UPDATE is not allowed with DISTINCT clause");
+        }
+        if (!getGroupByExpressions().isEmpty() && forClause != null) {
+            throw new IllegalArgumentException("FOR UPDATE is not allowed with GROUP BY clause");
+        }
         this.forClause = forClause;
     }
 
@@ -191,8 +211,48 @@ public class PostgresSelect extends SelectBase<PostgresExpression>
         return forClause;
     }
 
+    public PostgresWithClause getWithClause() {
+        return withClause;
+    }
+
+    public void setWithClause(PostgresWithClause withClause) {
+        this.withClause = withClause;
+    }
+
+    public boolean hasWithClause() {
+        return withClause != null;
+    }
+
+    public PostgresSelect getUnionClause() {
+        return unionClause;
+    }
+
+    public void setUnionClause(PostgresSelect unionClause) {
+        this.unionClause = unionClause;
+    }
+
+    public UnionType getUnionType() {
+        return unionType;
+    }
+
+    public void setUnionType(UnionType unionType) {
+        this.unionType = unionType;
+    }
+
+    public boolean hasUnionClause() {
+        return unionClause != null;
+    }
+
     @Override
     public String asString() {
         return PostgresVisitor.asString(this);
+    }
+
+    @Override
+    public void setGroupByExpressions(List<PostgresExpression> groupByExpressions) {
+        if (forClause != null && !groupByExpressions.isEmpty()) {
+            throw new IllegalArgumentException("FOR UPDATE is not allowed with GROUP BY clause");
+        }
+        super.setGroupByExpressions(groupByExpressions);
     }
 }

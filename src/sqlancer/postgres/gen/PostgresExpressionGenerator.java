@@ -68,6 +68,8 @@ import sqlancer.postgres.ast.PostgresTableReference;
 import sqlancer.postgres.ast.PostgresWindowFunction;
 import sqlancer.postgres.ast.PostgresWindowFunction.WindowFrame;
 import sqlancer.postgres.ast.PostgresWindowFunction.WindowSpecification;
+import sqlancer.postgres.ast.PostgresWithClause;
+import sqlancer.postgres.ast.PostgresCTE;
 
 public class PostgresExpressionGenerator implements ExpressionGenerator<PostgresExpression>,
         NoRECGenerator<PostgresSelect, PostgresJoin, PostgresExpression, PostgresTable, PostgresColumn>,
@@ -680,6 +682,26 @@ public class PostgresExpressionGenerator implements ExpressionGenerator<Postgres
         select.setFromList(tables.getTables().stream().map(t -> new PostgresFromTable(t, Randomly.getBoolean()))
                 .collect(Collectors.toList()));
         select.setFetchColumns(columns);
+        
+        // Decide whether to use GROUP BY
+        boolean hasGroupBy = Randomly.getBoolean();
+        if (hasGroupBy) {
+            select.setGroupByExpressions(columns);
+            // Don't set FOR clause when using GROUP BY
+            select.setSelectType(SelectType.ALL);
+        } else {
+            // Set select type (ALL or DISTINCT) and possibly FOR clause only if no GROUP BY
+            if (Randomly.getBoolean()) {
+                select.setSelectType(SelectType.DISTINCT);
+            } else {
+                select.setSelectType(SelectType.ALL);
+                // Only set FOR clause if not DISTINCT and no GROUP BY
+                if (Randomly.getBooleanWithRatherLowProbability()) {
+                    select.setForClause(ForClause.getRandom());
+                }
+            }
+        }
+        
         if (Randomly.getBoolean()) {
             select.setWhereClause(gen.generateExpression(0, PostgresDataType.BOOLEAN));
         }
@@ -692,9 +714,6 @@ public class PostgresExpressionGenerator implements ExpressionGenerator<Postgres
                 select.setOffsetClause(
                         PostgresConstant.createIntConstant(Randomly.getPositiveOrZeroNonCachedInteger()));
             }
-        }
-        if (Randomly.getBooleanWithRatherLowProbability()) {
-            select.setForClause(ForClause.getRandom());
         }
         return new PostgresSubquery(select, name);
     }
@@ -732,11 +751,85 @@ public class PostgresExpressionGenerator implements ExpressionGenerator<Postgres
         PostgresSelect select = new PostgresSelect();
 
         if (Randomly.getBooleanWithRatherLowProbability()) {
+            select.setWithClause(generateWithClause());
+        }
+
+        if (Randomly.getBooleanWithRatherLowProbability()) {
             List<PostgresExpression> windowFunctions = generateWindowFunctions();
             select.setWindowFunctions(windowFunctions);
         }
 
         return select;
+    }
+
+    private PostgresWithClause generateWithClause() {
+        int numCTEs = Randomly.smallNumber() + 1; // At least 1 CTE
+        List<PostgresCTE> ctes = new ArrayList<>();
+        
+        for (int i = 0; i < numCTEs; i++) {
+            ctes.add(generateCTE());
+        }
+        
+        return new PostgresWithClause(ctes);
+    }
+
+    private PostgresCTE generateCTE() {
+        // Generate a unique CTE name using UUID to avoid duplicates
+        String cteName = "cte_" + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        
+        // Optionally generate column aliases
+        List<String> columnAliases = new ArrayList<>();
+        if (Randomly.getBoolean()) {
+            int numColumns = Randomly.smallNumber() + 1;
+            for (int i = 0; i < numColumns; i++) {
+                columnAliases.add("col_" + i);
+            }
+        }
+        
+        // Generate the CTE query
+        PostgresSelect cteQuery = new PostgresSelect();
+        List<PostgresExpression> fetchColumns = generateFetchColumns(false);
+        cteQuery.setFetchColumns(fetchColumns);
+        
+        // Decide whether to use GROUP BY
+        boolean hasGroupBy = Randomly.getBoolean();
+        if (hasGroupBy) {
+            cteQuery.setGroupByExpressions(fetchColumns);
+            // Don't set FOR clause when using GROUP BY
+            cteQuery.setSelectType(SelectType.ALL);
+        } else {
+            // Set select type (ALL or DISTINCT) and possibly FOR clause only if no GROUP BY
+            if (Randomly.getBoolean()) {
+                cteQuery.setSelectType(SelectType.DISTINCT);
+            } else {
+                cteQuery.setSelectType(SelectType.ALL);
+                // Only set FOR clause if not DISTINCT and no GROUP BY
+                if (Randomly.getBoolean()) {
+                    cteQuery.setForClause(ForClause.getRandom());
+                }
+            }
+        }
+        
+        if (!targetTables.isEmpty()) {
+            cteQuery.setFromList(getTableRefs());
+            if (Randomly.getBoolean()) {
+                cteQuery.setWhereClause(generateExpression(PostgresDataType.BOOLEAN));
+            }
+        }
+        
+        List<PostgresColumn> cteColumns = new ArrayList<>();
+        for (PostgresExpression col : fetchColumns) {
+            if (col instanceof PostgresColumnValue) {
+                cteColumns.add(((PostgresColumnValue) col).getColumn());
+            }
+        }
+        
+        return PostgresCTE.builder()
+            .name(cteName)
+            .columnAliases(columnAliases)
+            .query(cteQuery)
+            .columns(cteColumns)
+            .build();
     }
 
     private List<PostgresExpression> generateWindowFunctions() {
@@ -898,8 +991,12 @@ public class PostgresExpressionGenerator implements ExpressionGenerator<Postgres
             select.setSelectType(PostgresSelect.SelectType.ALL);
             return true;
         } else {
-            select.setSelectType(PostgresSelect.SelectType.DISTINCT);
-            return false;
+            // Only set DISTINCT if there's no FOR UPDATE clause
+            if (select.getForClause() == null) {
+                select.setSelectType(PostgresSelect.SelectType.DISTINCT);
+                return false;
+            }
+            return true;
         }
     }
 

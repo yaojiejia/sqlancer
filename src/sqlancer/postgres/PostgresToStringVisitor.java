@@ -34,6 +34,8 @@ import sqlancer.postgres.ast.PostgresTableReference;
 import sqlancer.postgres.ast.PostgresWindowFunction;
 import sqlancer.postgres.ast.PostgresWindowFunction.WindowFrame;
 import sqlancer.postgres.ast.PostgresWindowFunction.WindowSpecification;
+import sqlancer.postgres.ast.PostgresCTE;
+import sqlancer.postgres.ast.PostgresWithClause;
 
 public final class PostgresToStringVisitor extends ToStringVisitor<PostgresExpression> implements PostgresVisitor {
 
@@ -105,6 +107,10 @@ public final class PostgresToStringVisitor extends ToStringVisitor<PostgresExpre
 
     @Override
     public void visit(PostgresSelect s) {
+        if (s.hasWithClause()) {
+            visit(s.getWithClause());
+            sb.append(" ");
+        }
         sb.append("SELECT ");
         switch (s.getSelectOption()) {
         case DISTINCT:
@@ -172,7 +178,6 @@ public final class PostgresToStringVisitor extends ToStringVisitor<PostgresExpre
         if (s.getHavingClause() != null) {
             sb.append(" HAVING ");
             visit(s.getHavingClause());
-
         }
         if (!s.getOrderByClauses().isEmpty()) {
             sb.append(" ORDER BY ");
@@ -182,10 +187,59 @@ public final class PostgresToStringVisitor extends ToStringVisitor<PostgresExpre
             sb.append(" LIMIT ");
             visit(s.getLimitClause());
         }
-
         if (s.getOffsetClause() != null) {
             sb.append(" OFFSET ");
             visit(s.getOffsetClause());
+        }
+        if (s.getForClause() != null) {
+            sb.append(" FOR ");
+            sb.append(s.getForClause().getTextRepresentation());
+        }
+
+        if (s.hasUnionClause()) {
+            sb.append(" ");
+            switch (s.getUnionType()) {
+                case UNION:
+                    sb.append("UNION ");
+                    break;
+                case UNION_ALL:
+                    sb.append("UNION ALL ");
+                    break;
+                case INTERSECT:
+                    sb.append("INTERSECT ");
+                    break;
+                case EXCEPT:
+                    sb.append("EXCEPT ");
+                    break;
+                default:
+                    throw new AssertionError(s.getUnionType());
+            }
+            visit(s.getUnionClause());
+        }
+    }
+
+    @Override
+    public void visit(PostgresCTE cte) {
+        sb.append(cte.getName());
+        if (!cte.getColumnAliases().isEmpty()) {
+            sb.append("(");
+            sb.append(String.join(", ", cte.getColumnAliases()));
+            sb.append(")");
+        }
+        sb.append(" AS (");
+        visit(cte.getQuery());
+        sb.append(")");
+    }
+
+    @Override
+    public void visit(PostgresWithClause withClause) {
+        sb.append("WITH ");
+        List<PostgresCTE> cteList = withClause.getCteList();
+        for (int i = 0; i < cteList.size(); i++) {
+            if (i != 0) {
+                sb.append(", ");
+            }
+            visit(cteList.get(i));
         }
     }
 
